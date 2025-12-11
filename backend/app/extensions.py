@@ -1,56 +1,64 @@
 # app/extensions.py
 """
-Central place for Flask extensions.
-SocketIO import/initialization is deferred to avoid hard failure
-during CLI operations (flask db migrate/upgrade etc.)
-"""
+Central Flask extensions module.
+Exports module-level extension objects so other modules can import them.
 
+This file intentionally exposes:
+    db, migrate, jwt, cors, limiter, socketio
+
+socketio will be None until init_socketio(app) creates/assigns it.
+"""
+import logging
+import os
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
+from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from flask_cors import CORS
 
-# SQLAlchemy / Migrate / JWT / Limiter / CORS created normally
+# Standard extensions exported for import elsewhere
 db = SQLAlchemy()
 migrate = Migrate()
 jwt = JWTManager()
+cors = CORS(resources={r"/*": {"origins": "*"}})
 
-# Limiter - uses in-memory storage by default; override config for production.
+# Global limiter instance (module-level)
+# It will be configured against the app when init_limiter(app) is called.
 limiter = Limiter(key_func=get_remote_address, default_limits=["200 per day", "50 per hour"])
 
-# CORS will be initialized per-app in create_app (so it can read app config)
-cors = CORS()
+# Module-level socketio variable exported for other modules to reference
+# It will remain None until init_socketio(app) assigns an instance to it.
+socketio = None
 
-# SocketIO will be created lazily because importing flask_socketio at module import
-# time can break CLI commands if package versions mismatch. Keep a module-level
-# variable that will be None until init_socketio() is called.
-socketio = None  # type: ignore
-
-def init_socketio(app, **kwargs):
+def init_limiter(app):
     """
-    Attempt to import and initialize flask_socketio.SocketIO.
-    Returns the SocketIO instance on success, or None on failure.
-    kwargs are passed to SocketIO(...) constructor.
+    Initialize the module-level limiter with the Flask app.
+    Flask-Limiter will check app.config['RATELIMIT_STORAGE_URL'] or the environment.
+    """
+    try:
+        limiter.init_app(app)
+    except Exception as e:
+        logging.getLogger(__name__).exception("Failed to init limiter: %s", e)
+        # fallback: limiter remains available (in-memory) so the app still runs
+
+def init_socketio(app):
+    """
+    Try to create and return a Flask-SocketIO instance if libraries are present.
+    Assign it to the module-level `socketio` so other modules can reference it as
+    app.extensions.socketio. If SocketIO is not available or fails, return None.
     """
     global socketio
-    if socketio is not None:
-        return socketio
+    try:
+        from flask_socketio import SocketIO  # local import
+    except Exception:
+        # SocketIO not installed or incompatible — return None silently
+        return None
 
     try:
-        # Import inside function to avoid top-level import-time errors
-        from flask_socketio import SocketIO
-        # Choose cors_allowed_origins from app config or default to '*'
-        cors_allowed = app.config.get("CORS_ALLOWED_ORIGINS", "*")
-        # Merge defaults with kwargs (kwargs override defaults)
-        opts = {"cors_allowed_origins": cors_allowed}
-        opts.update(kwargs or {})
-        socketio = SocketIO(app, **opts)
-        app.logger.info("SocketIO initialized successfully.")
+        socketio = SocketIO(cors_allowed_origins="*")
         return socketio
-    except Exception as exc:
-        # Log a warning and continue without socket support
-        app.logger.warning("SocketIO not available during init_socketio(): %s. Continuing without SocketIO.", exc)
+    except Exception as e:
+        logging.getLogger(__name__).exception("Failed to initialize SocketIO: %s", e)
         socketio = None
         return None

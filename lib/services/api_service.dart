@@ -1,183 +1,130 @@
-// lib/services/api_service.dart
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:mime/mime.dart';
+import 'package:http_parser/http_parser.dart';
 
-/// ApiService adapted to your project:
-/// - Singleton factory supports ApiService() and ApiService(token: token)
-/// - Exposes get/post/put/delete/uploadFile returning http.Response / StreamedResponse
-/// - Public static baseUrl with safe default; use setBaseUrl() to override at runtime
+class ApiException implements Exception {
+  final String message;
+  ApiException(this.message);
+  @override
+  String toString() => 'ApiException: $message';
+}
+
 class ApiService {
-  ApiService._internal({String? token}) {
-    _token = token;
-  }
+  ApiService._();
+  static final ApiService instance = ApiService._();
 
-  static final ApiService _instance = ApiService._internal();
+  // TODO: set this to your production backend base URL (https://api.example.com)
+  final String baseUrl = const String.fromEnvironment('API_BASE_URL', defaultValue: 'http://10.0.2.2:5000');
 
-  /// Factory - matches existing calls in your code that call ApiService() or ApiService(token: token)
-  factory ApiService({String? token}) {
-    if (token != null && token.isNotEmpty) {
-      _instance._token = token;
+  Map<String, String> _defaultHeaders() => {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      };
+
+  Future<Map<String, dynamic>> _handleResponse(http.Response res) async {
+    final status = res.statusCode;
+    if (res.body.isEmpty) {
+      if (status >= 200 && status < 300) return {};
+      throw ApiException('Empty response with status $status');
     }
-    return _instance;
-  }
 
-  /// Public baseUrl (so legacy code can use ApiService.baseUrl). Default to localhost.
-  static String baseUrl = 'http://127.0.0.1:5000/api';
-
-  /// Use this to override base URL at runtime (call from main or config loader)
-  static void setBaseUrl(String url) {
-    baseUrl = url;
-  }
-
-  final http.Client _client = http.Client();
-  String? _token;
-
-  static const String _prefsTokenKey = 'access_token';
-
-  String? get token => _token;
-
-  void setToken(String? token) {
-    _token = token;
-  }
-
-  Future<void> persistToken() async {
-    if (_token == null) return;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefsTokenKey, _token!);
-  }
-
-  Future<void> loadPersistedToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    final t = prefs.getString(_prefsTokenKey);
-    if (t != null && t.isNotEmpty) {
-      _token = t;
+    final dynamic decoded = json.decode(res.body);
+    if (status >= 200 && status < 300) {
+      if (decoded is Map<String, dynamic>) return decoded;
+      return {'data': decoded};
+    } else {
+      final message = decoded is Map && decoded['message'] != null
+          ? decoded['message'].toString()
+          : 'API error (status $status)';
+      throw ApiException(message);
     }
   }
 
-  Map<String, String> _defaultHeaders({bool json = true}) {
-    final headers = <String, String>{};
-    if (json) headers['Content-Type'] = 'application/json';
-    headers['Accept'] = 'application/json';
-    if (_token != null && _token!.isNotEmpty) {
-      headers['Authorization'] = 'Bearer $_token';
-    }
-    return headers;
+  Future<Map<String, dynamic>> register(String name, String email, String password) async {
+    final uri = Uri.parse('$baseUrl/register');
+    final body = json.encode({'name': name, 'email': email, 'password': password});
+    final res = await http.post(uri, headers: _defaultHeaders(), body: body).timeout(const Duration(seconds: 30));
+    return _handleResponse(res);
   }
 
-  Uri _uri(String path, [Map<String, dynamic>? queryParams]) {
-    if (path.startsWith('http://') || path.startsWith('https://')) {
-      final u = Uri.parse(path);
-      if (queryParams == null) return u;
-      return u.replace(queryParameters: queryParams.map((k, v) => MapEntry(k, v.toString())));
-    }
-
-    final base = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
-    final p = path.startsWith('/') ? path : '/$path';
-    final full = base + p;
-    final u = Uri.parse(full);
-    if (queryParams == null || queryParams.isEmpty) return u;
-    return u.replace(queryParameters: queryParams.map((k, v) => MapEntry(k, v.toString())));
+  Future<Map<String, dynamic>> login(String email, String password) async {
+    final uri = Uri.parse('$baseUrl/login');
+    final body = json.encode({'email': email, 'password': password});
+    final res = await http.post(uri, headers: _defaultHeaders(), body: body).timeout(const Duration(seconds: 30));
+    return _handleResponse(res);
   }
 
-  Future<http.Response> get(String path, {Map<String, dynamic>? params, Map<String, String>? headers, Duration? timeout}) async {
-    final uri = _uri(path, params);
-    final h = {..._defaultHeaders(), if (headers != null) ...headers};
-    try {
-      final resp = await _client.get(uri, headers: h).timeout(timeout ?? const Duration(seconds: 15));
-      return resp;
-    } on SocketException catch (e) {
-      if (kDebugMode) debugPrint('ApiService GET network error: $e');
-      rethrow;
-    } on TimeoutException catch (e) {
-      if (kDebugMode) debugPrint('ApiService GET timeout: $e');
-      rethrow;
-    }
+  Future<Map<String, dynamic>> generateKeyPair() async {
+    final uri = Uri.parse('$baseUrl/generate_keypair');
+    final res = await http.get(uri, headers: _defaultHeaders()).timeout(const Duration(seconds: 30));
+    return _handleResponse(res);
   }
 
-  Future<http.Response> post(String path, Map<String, dynamic>? body, {Map<String, String>? headers, Duration? timeout}) async {
-    final uri = _uri(path);
-    final h = {..._defaultHeaders(), if (headers != null) ...headers};
-    final payload = (body == null) ? null : jsonEncode(body);
-    try {
-      final resp = await _client.post(uri, headers: h, body: payload).timeout(timeout ?? const Duration(seconds: 15));
-      return resp;
-    } on SocketException catch (e) {
-      if (kDebugMode) debugPrint('ApiService POST network error: $e');
-      rethrow;
-    } on TimeoutException catch (e) {
-      if (kDebugMode) debugPrint('ApiService POST timeout: $e');
-      rethrow;
-    }
+  Future<Map<String, dynamic>> encryptMessage(String plaintext, String recipientPublicKey) async {
+    final uri = Uri.parse('$baseUrl/encrypt');
+    final body = json.encode({'message': plaintext, 'recipient_public_key': recipientPublicKey});
+    final res = await http.post(uri, headers: _defaultHeaders(), body: body).timeout(const Duration(seconds: 30));
+    return _handleResponse(res);
   }
 
-  Future<http.Response> put(String path, Map<String, dynamic>? body, {Map<String, String>? headers, Duration? timeout}) async {
-    final uri = _uri(path);
-    final h = {..._defaultHeaders(), if (headers != null) ...headers};
-    final payload = (body == null) ? null : jsonEncode(body);
-    try {
-      final resp = await _client.put(uri, headers: h, body: payload).timeout(timeout ?? const Duration(seconds: 15));
-      return resp;
-    } on SocketException catch (e) {
-      if (kDebugMode) debugPrint('ApiService PUT network error: $e');
-      rethrow;
-    } on TimeoutException catch (e) {
-      if (kDebugMode) debugPrint('ApiService PUT timeout: $e');
-      rethrow;
-    }
+  Future<Map<String, dynamic>> decryptMessage(String ciphertext, String privateKey) async {
+    final uri = Uri.parse('$baseUrl/decrypt');
+    final body = json.encode({'ciphertext': ciphertext, 'private_key': privateKey});
+    final res = await http.post(uri, headers: _defaultHeaders(), body: body).timeout(const Duration(seconds: 30));
+    return _handleResponse(res);
   }
 
-  Future<http.Response> delete(String path, {Map<String, dynamic>? body, Map<String, String>? headers, Duration? timeout}) async {
-    final uri = _uri(path);
-    final h = {..._defaultHeaders(), if (headers != null) ...headers};
-    final payload = (body == null) ? null : jsonEncode(body);
-    try {
-      final resp = await _client.delete(uri, headers: h, body: payload).timeout(timeout ?? const Duration(seconds: 15));
-      return resp;
-    } on SocketException catch (e) {
-      if (kDebugMode) debugPrint('ApiService DELETE network error: $e');
-      rethrow;
-    } on TimeoutException catch (e) {
-      if (kDebugMode) debugPrint('ApiService DELETE timeout: $e');
-      rethrow;
-    }
-  }
-
-  Future<http.StreamedResponse> uploadFile(
-    String path, {
-    required String filePath,
-    required String fieldName,
-    Map<String, String>? fields,
-    Map<String, String>? extraHeaders,
-    Duration? timeout,
-  }) async {
-    final uri = _uri(path);
+  /// Uploads an image file and embeds `payload` into it via steganography endpoint.
+  /// Returns JSON with embedded image URL or bytes (depending on backend).
+  Future<Map<String, dynamic>> embedMessage(File imageFile, String payload, {String? token}) async {
+    final uri = Uri.parse('$baseUrl/embed');
     final request = http.MultipartRequest('POST', uri);
-    final headers = {..._defaultHeaders(json: false), if (extraHeaders != null) ...extraHeaders};
-    request.headers.addAll(headers);
+    if (token != null) request.headers['Authorization'] = 'Bearer $token';
 
-    if (fields != null) request.fields.addAll(fields);
+    final mimeType = lookupMimeType(imageFile.path) ?? 'application/octet-stream';
+    final parts = mimeType.split('/');
+    final fileStream = http.ByteStream(imageFile.openRead());
+    final length = await imageFile.length();
 
-    final multipartFile = await http.MultipartFile.fromPath(fieldName, filePath);
+    final multipartFile = http.MultipartFile(
+      'image',
+      fileStream,
+      length,
+      filename: imageFile.path.split(Platform.pathSeparator).last,
+      contentType: MediaType(parts[0], parts[1]),
+    );
+    request.files.add(multipartFile);
+    request.fields['payload'] = payload;
+
+    final streamed = await request.send().timeout(const Duration(seconds: 60));
+    final response = await http.Response.fromStream(streamed);
+    return _handleResponse(response);
+  }
+
+  /// Uploads an image to extract a hidden payload.
+  Future<Map<String, dynamic>> extractMessage(File imageFile, {String? token}) async {
+    final uri = Uri.parse('$baseUrl/extract');
+    final request = http.MultipartRequest('POST', uri);
+    if (token != null) request.headers['Authorization'] = 'Bearer $token';
+
+    final mimeType = lookupMimeType(imageFile.path) ?? 'application/octet-stream';
+    final parts = mimeType.split('/');
+    final fileStream = http.ByteStream(imageFile.openRead());
+    final length = await imageFile.length();
+
+    final multipartFile = http.MultipartFile(
+      'image',
+      fileStream,
+      length,
+      filename: imageFile.path.split(Platform.pathSeparator).last,
+      contentType: MediaType(parts[0], parts[1]),
+    );
     request.files.add(multipartFile);
 
-    try {
-      final streamed = await _client.send(request).timeout(timeout ?? const Duration(seconds: 30));
-      return streamed;
-    } on SocketException catch (e) {
-      if (kDebugMode) debugPrint('ApiService uploadFile network error: $e');
-      rethrow;
-    } on TimeoutException catch (e) {
-      if (kDebugMode) debugPrint('ApiService uploadFile timeout: $e');
-      rethrow;
-    }
-  }
-
-  void dispose() {
-    _client.close();
+    final streamed = await request.send().timeout(const Duration(seconds: 60));
+    final response = await http.Response.fromStream(streamed);
+    return _handleResponse(response);
   }
 }
