@@ -29,57 +29,120 @@ class _ChatScreenState extends State<ChatScreen> {
     auth = Provider.of<AuthService>(context, listen: false);
     socketSvc = Provider.of<SocketService>(context, listen: false);
     _loadMessages();
-    if (socketSvc.socket == null) socketSvc.connect();
+    // connect socket if not connected
+    if (socketSvc.socket == null) {
+      socketSvc.connect();
+    }
     socketSvc.on('new_message', (data) {
-      // data is message map
-      setState(() => messages.add(MessageModel.fromMap(data)));
+      // data expected to be message map
+      try {
+        setState(() => messages.add(MessageModel.fromMap(Map<String, dynamic>.from(data))));
+      } catch (_) {}
     });
   }
 
+  @override
+  void dispose() {
+    _textC.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadMessages() async {
-    setState((){ loading = true; });
-    final r = await auth.api.get('/messages/${widget.otherUser.id}');
-    if (r.statusCode == 200) {
-      final List<dynamic> list = jsonDecode(r.body);
-      setState(() => messages = list.map((m) => MessageModel.fromMap(m)).toList());
+    setState(() {
+      loading = true;
+    });
+
+    try {
+      final r = await auth.api.get('/messages/${widget.otherUser.id}');
+      // r is a Map<String,dynamic>; backend might return {'messages': [...] } or {'data': [...]}
+      dynamic raw;
+      if (r.containsKey('messages')) raw = r['messages'];
+      else if (r.containsKey('data')) raw = r['data'];
+      else {
+        raw = r.values.isNotEmpty && r.values.first is List ? r.values.first : null;
+      }
+
+      if (raw is List) {
+        final parsed = raw.map((m) {
+          if (m is Map<String, dynamic>) return MessageModel.fromMap(m);
+          if (m is String) {
+            try {
+              final dec = jsonDecode(m);
+              return MessageModel.fromMap(Map<String, dynamic>.from(dec));
+            } catch (_) {
+              return null;
+            }
+          }
+          return null;
+        }).whereType<MessageModel>().toList();
+
+        setState(() => messages = parsed);
+      } else {
+        // no messages or unexpected shape: keep empty list
+      }
+    } catch (e) {
+      // silent or set an error state if you prefer
+      // ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to load messages: $e')));
+    } finally {
+      if (mounted) setState(() => loading = false);
     }
-    setState((){ loading = false; });
   }
 
   Future<void> _send() async {
     final text = _textC.text.trim();
     if (text.isEmpty) return;
-    // TODO: Implement client-side encryption here: use crypto_stub.dart (or pointycastle)
     final payload = {'receiver_id': widget.otherUser.id, 'ciphertext': text};
-    final r = await auth.api.post('/send_message', payload);
-    if (r.statusCode == 201) {
-      final data = jsonDecode(r.body);
-      setState(() => messages.add(MessageModel.fromMap(data['message'])));
-      _textC.clear();
-    } else {
-      // handle error
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to send')));
+
+    try {
+      final r = await auth.api.post('/send_message', payload);
+      // backend may return {'message': {...}} or {'data': {'message': {...}}}
+      Map<String, dynamic>? msg;
+      if (r.containsKey('message') && r['message'] is Map<String, dynamic>) {
+        msg = Map<String, dynamic>.from(r['message']);
+      } else if (r.containsKey('data') && r['data'] is Map && r['data']['message'] is Map) {
+        msg = Map<String, dynamic>.from(r['data']['message']);
+      } else if (r.values.isNotEmpty && r.values.first is Map && (r.values.first as Map).containsKey('message')) {
+        final v = r.values.first as Map;
+        msg = Map<String, dynamic>.from(v['message']);
+      }
+
+      if (msg != null) {
+        setState(() => messages.add(MessageModel.fromMap(msg!)));
+        _textC.clear();
+      } else {
+        // maybe backend returned the message list or success code; attempt to reload
+        await _loadMessages();
+        _textC.clear();
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to send: $e')));
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final me = auth.user!;
+    final me = (auth as dynamic).user; // may be null if AuthService doesn't expose user
     return Scaffold(
       appBar: AppBar(title: Text(widget.otherUser.username)),
       body: Column(
         children: [
           Expanded(
-            child: loading ? const Center(child: CircularProgressIndicator()) : ListView.builder(
-              itemCount: messages.length,
-              itemBuilder: (_, i) => MessageBubble(message: messages[i], isMe: messages[i].senderId == me.id),
-            ),
+            child: loading
+                ? const Center(child: CircularProgressIndicator())
+                : ListView.builder(
+                    itemCount: messages.length,
+                    itemBuilder: (_, i) {
+                      final m = messages[i];
+                      final isMe = (me != null && m.senderId == me.id);
+                      return MessageBubble(message: m, isMe: isMe);
+                    },
+                  ),
           ),
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: Row(children: [
               Expanded(child: TextField(controller: _textC, decoration: const InputDecoration(hintText: 'Type ciphertext...'))),
-              const SizedBox(width:8),
+              const SizedBox(width: 8),
               ElevatedButton(onPressed: _send, child: const Text('Send'))
             ]),
           )

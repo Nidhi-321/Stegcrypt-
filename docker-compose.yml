@@ -1,0 +1,31 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: dbuser
+      POSTGRES_PASSWORD: dbpass
+      POSTGRES_DB: stegcrypt
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  memurai:
+    image: difegue/memurai:latest  # optional; or use Memurai on Windows host
+    ports:
+      - "6379:6379"
+
+  backend:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - memurai
+    ports:
+      - "8000:8000"
+    command: gunicorn --bind 0.0.0.0:8000 wsgi:app
+
+volumes:
+  pgdata:

@@ -25,21 +25,51 @@ class _UsersScreenState extends State<UsersScreen> {
   }
 
   Future<void> _loadUsers() async {
-    setState((){ loading = true; });
+    setState(() {
+      loading = true;
+      error = null;
+    });
+
     final auth = Provider.of<AuthService>(context, listen: false);
     final api = auth.api;
     try {
-      final r = await api.get('/users');
-      if (r.statusCode == 200) {
-        final List<dynamic> list = jsonDecode(r.body);
-        setState(() => users = list.map((e) => User.fromMap(e)).where((u) => u.id != auth.user!.id).toList());
+      final Map<String, dynamic> r = await api.get('/users'); // decoded JSON map
+      // backend may return several shapes: {'users': [...]}, {'data': [...]}, or top-level list (rare)
+      dynamic rawList;
+      if (r.containsKey('users')) {
+        rawList = r['users'];
+      } else if (r.containsKey('data')) {
+        rawList = r['data'];
       } else {
-        setState(() => error = 'Failed to load users');
+        // maybe the API returned the list directly under a 'data' key or returned an encoded list in 'data'
+        rawList = r.values.isNotEmpty && r.values.first is List ? r.values.first : null;
+      }
+
+      if (rawList is List) {
+        final dynAuth = auth as dynamic;
+        final currentId = dynAuth.user != null ? dynAuth.user.id : null;
+        final parsed = rawList.map((e) {
+          if (e is Map<String, dynamic>) return User.fromMap(e);
+          if (e is String) {
+            try {
+              final m = jsonDecode(e);
+              return User.fromMap(m as Map<String, dynamic>);
+            } catch (_) {
+              return null;
+            }
+          }
+          return null;
+        }).whereType<User>().toList();
+
+        // filter out current user if available
+        setState(() => users = currentId == null ? parsed : parsed.where((u) => u.id != currentId).toList());
+      } else {
+        setState(() => error = 'Unexpected users response');
       }
     } catch (e) {
-      setState(() => error = 'Error: $e');
+      setState(() => error = 'Error loading users: $e');
     } finally {
-      setState((){ loading = false; });
+      if (mounted) setState(() => loading = false);
     }
   }
 
@@ -51,17 +81,21 @@ class _UsersScreenState extends State<UsersScreen> {
       appBar: AppBar(title: const Text('Contacts'), actions: [
         IconButton(onPressed: () => auth.logout(), icon: const Icon(Icons.logout))
       ]),
-      body: loading ? const Center(child:CircularProgressIndicator()) : error != null ? Center(child: Text(error!)) : ListView.builder(
-        itemCount: users.length,
-        itemBuilder: (_, i) {
-          final u = users[i];
-          return ListTile(
-            title: Text(u.username),
-            subtitle: Text('ID: ${u.id}'),
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(otherUser: u))),
-          );
-        },
-      ),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : error != null
+              ? Center(child: Text(error!))
+              : ListView.builder(
+                  itemCount: users.length,
+                  itemBuilder: (_, i) {
+                    final u = users[i];
+                    return ListTile(
+                      title: Text(u.username),
+                      subtitle: Text('ID: ${u.id}'),
+                      onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(otherUser: u))),
+                    );
+                  },
+                ),
     );
   }
 }

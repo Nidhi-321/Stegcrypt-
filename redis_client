@@ -1,0 +1,5 @@
+# backend/cache.py
+import redis
+from config import BaseConfig
+
+r = redis.from_url(BaseConfig.REDIS_URL, decode_responses=False)

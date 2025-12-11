@@ -25,7 +25,7 @@ cors = CORS(resources={r"/*": {"origins": "*"}})
 
 # Global limiter instance (module-level)
 # It will be configured against the app when init_limiter(app) is called.
-limiter = Limiter(key_func=get_remote_address, default_limits=["200 per day", "50 per hour"])
+limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
 
 # Module-level socketio variable exported for other modules to reference
 # It will remain None until init_socketio(app) assigns an instance to it.

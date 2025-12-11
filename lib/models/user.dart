@@ -1,19 +1,18 @@
 // lib/models/user.dart
-import 'dart:convert';
-
 class User {
-  final int id;
+  final dynamic id;
   final String username;
-  final String? publicKey;
+  final String? email;
 
-  User({required this.id, required this.username, this.publicKey});
+  User({required this.id, required this.username, this.email});
 
-  factory User.fromMap(Map<String, dynamic> m) =>
-      User(id: m['id'], username: m['username'], publicKey: m['public_key']);
+  factory User.fromMap(Map<String, dynamic> m) {
+    return User(
+      id: m['id'] ?? m['user_id'] ?? m['uid'],
+      username: (m['username'] ?? m['name'] ?? m['email'] ?? '').toString(),
+      email: m['email']?.toString(),
+    );
+  }
 
-  factory User.fromJson(String jsonStr) => User.fromMap(jsonDecode(jsonStr));
-
-  Map<String,dynamic> toMap() => {'id': id, 'username': username, 'public_key': publicKey};
-
-  String toJson() => jsonEncode(toMap());
+  Map<String, dynamic> toMap() => {'id': id, 'username': username, 'email': email};
 }

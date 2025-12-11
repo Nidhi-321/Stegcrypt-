@@ -1,7 +1,7 @@
 // lib/screens/login_screen.dart
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import '../services/api_service.dart';
+import 'package:provider/provider.dart';
+import '../services/auth_service.dart';
 
 class LoginScreen extends StatefulWidget {
   final VoidCallback? onLoginSuccess;
@@ -42,26 +42,20 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
     });
     _formKey.currentState!.save();
 
+    final auth = Provider.of<AuthService>(context, listen: false);
     try {
-      final res = await ApiService.instance.login(_email.trim(), _password);
-      // Expect backend to return something like: { "token": "...", "user": {...} }
-      if (res.containsKey('token') || res.containsKey('data') || res.containsKey('user')) {
+      final resp = await auth.login(_email.trim(), _password);
+      // AuthService.login returns map like {'ok': true, 'token': '...', 'user': {...}} or {'ok': false, 'error': '...'}
+      if (resp['ok'] == true) {
         // animate success
         await _animController.forward();
         widget.onLoginSuccess?.call();
-        // Optionally navigate away here
+        // optionally navigate to home or pop
       } else {
-        // fallback - sometimes backend returns message + status
-        if (res['message'] != null) {
-          setState(() => _error = res['message'].toString());
-        } else {
-          setState(() => _error = 'Login failed: unexpected response');
-        }
+        setState(() => _error = resp['error']?.toString() ?? 'Login failed');
       }
-    } on Exception catch (e) {
-      setState(() {
-        _error = e.toString();
-      });
+    } catch (e) {
+      setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -85,7 +79,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                   child: const FlutterLogo(size: 96),
                 ),
                 const SizedBox(height: 18),
-                Text('StegCrypt+', style: Theme.of(context).textTheme.headline5),
+                Text('StegCrypt+', style: Theme.of(context).textTheme.headlineSmall),
                 const SizedBox(height: 12),
                 Card(
                   elevation: 6,

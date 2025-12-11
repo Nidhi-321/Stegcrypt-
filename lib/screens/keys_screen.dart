@@ -23,7 +23,7 @@ class _KeysScreenState extends State<KeysScreen> {
       _message = null;
     });
     try {
-      final res = await ApiService.instance.generateKeyPair();
+      final res = await ApiService.generateKeyPair();
       // Expecting { "public_key": "...", "private_key": "..." }
       setState(() {
         _publicKey = res['public_key']?.toString() ?? res['publicKey']?.toString();
